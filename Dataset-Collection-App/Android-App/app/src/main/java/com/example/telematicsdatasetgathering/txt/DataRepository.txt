@@ -1,0 +1,28 @@
+// file: com/example/telematicsdatasetgathering/DataRepository.kt
+
+package com.example.telematicsdatasetgathering
+
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+
+// A simple data class to hold the real-time stats
+data class RealTimeStats(
+    var accMag: Float = 0f,
+    var gyroMag: Float = 0f,
+    var speed: Float = 0f,
+    var latitude: Double = 0.0,
+    var longitude: Double = 0.0
+)
+
+// A singleton object to hold and share the data flow
+object DataRepository {
+    // A private mutable flow that only the service can write to
+    private val _statsFlow = MutableSharedFlow<RealTimeStats>()
+    // A public, read-only flow for the UI to collect from
+    val statsFlow = _statsFlow.asSharedFlow()
+
+    // A function for the service to call to update the stats
+    suspend fun updateStats(stats: RealTimeStats) {
+        _statsFlow.emit(stats)
+    }
+}

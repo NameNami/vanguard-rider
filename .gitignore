@@ -1,0 +1,19 @@
+# General files to ignore
+.idea/
+*.iml
+.DS_Store
+local.properties
+
+# Android Studio build files, located in its specific subdirectory
+/Dataset-Collection-App/Android-App/build/
+/Dataset-Collection-App/Android-App/app/build/
+/Dataset-Collection-App/Android-App/captures/
+/Dataset-Collection-App/Android-App/.gradle/
+/Dataset-Collection-App/Android-App/.idea/
+/Dataset-Collection-App/Android-App/*.apk
+/Dataset-Collection-App/Android-App/*.aab
+
+# Any CSV datasets or saved AI models
+*.csv
+*.pkl
+*.h5

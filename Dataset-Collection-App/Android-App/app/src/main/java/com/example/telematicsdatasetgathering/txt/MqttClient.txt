@@ -1,0 +1,102 @@
+// file: com/example/telematicsdatasetgathering/MqttClient.kt
+
+package com.example.telematicsdatasetgathering
+
+import android.content.Context
+import android.util.Log
+import org.eclipse.paho.android.service.MqttAndroidClient
+import org.eclipse.paho.client.mqttv3.*
+import javax.net.ssl.SSLSocketFactory
+
+class MqttClient(context: Context) {
+    // hivemq.webclient.1755785471926
+    // Hr7m><CzT*ax6g@0BJ8A
+    companion object {
+        const val TAG = "MqttClient"
+        // IMPORTANT: Replace with your actual MQTT broker URL and topic
+        // "https://test.com/pub-sub" is not a valid MQTT broker URL.
+        // Use the format: "tcp://<your-broker-address>:<port>"
+        private const val MQTT_BROKER_URL = "ssl://ba70606db22d4a5db773598694423e08.s1.eu.hivemq.cloud:8883"
+        private const val MQTT_TOPIC = "telematics/data"
+        private const val MQTT_USERNAME = "hivemq.webclient.1755873315563"
+        private const val MQTT_PASSWORD = "!gN02;xmTEunh5%?M1FV"
+    }
+
+    private val clientId = org.eclipse.paho.client.mqttv3.MqttClient.generateClientId()
+    private val mqttClient = MqttAndroidClient(context, MQTT_BROKER_URL, clientId)
+
+
+    fun connect(onSuccess: () -> Unit, onFailure: (Throwable?) -> Unit) {
+        try {
+            if (mqttClient.isConnected) {
+                onSuccess()
+                return
+            }
+
+            val options = MqttConnectOptions().apply {
+                isAutomaticReconnect = true
+                isCleanSession = true
+                userName = MQTT_USERNAME
+                password = MQTT_PASSWORD.toCharArray()
+                socketFactory = SSLSocketFactory.getDefault()
+            }
+
+            mqttClient.setCallback(object : MqttCallbackExtended {
+                override fun connectComplete(reconnect: Boolean, serverURI: String?) {
+                    Log.d(TAG, "MQTT Connection Complete (reconnect: $reconnect)")
+                    onSuccess()
+                }
+
+                override fun connectionLost(cause: Throwable?) {
+                    Log.e(TAG, "MQTT Connection Lost: ${cause?.message}")
+                }
+
+                override fun messageArrived(topic: String?, message: MqttMessage?) {
+                    // Not used for publishing
+                }
+
+                override fun deliveryComplete(token: IMqttDeliveryToken?) {
+                    // Not used for publishing
+                }
+            })
+
+            mqttClient.connect(options, null, object : IMqttActionListener {
+                override fun onSuccess(asyncActionToken: IMqttToken?) {
+                    Log.d(TAG, "MQTT Connection Success")
+                    // The connectComplete callback will handle the success logic
+                }
+
+                override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
+                    Log.e(TAG, "MQTT Connection Failure: ${exception?.message}")
+                    onFailure(exception)
+                }
+            })
+        } catch (e: MqttException) {
+            e.printStackTrace()
+            onFailure(e)
+        }
+    }
+
+    fun publish(payload: String) {
+        if (!mqttClient.isConnected) {
+            Log.w(TAG, "MQTT client is not connected. Cannot publish.")
+            return
+        }
+        try {
+            val message = MqttMessage()
+            message.payload = payload.toByteArray()
+            message.qos = 1 // At least once
+            mqttClient.publish(MQTT_TOPIC, message)
+            Log.d(TAG, "Published message to $MQTT_TOPIC")
+        } catch (e: MqttException) {
+            Log.e(TAG, "Error publishing message: ${e.message}")
+        }
+    }
+
+    fun disconnect() {
+        if (mqttClient.isConnected) {
+            mqttClient.disconnect()
+            Log.d(TAG, "MQTT client disconnected.")
+        }
+    }
+}

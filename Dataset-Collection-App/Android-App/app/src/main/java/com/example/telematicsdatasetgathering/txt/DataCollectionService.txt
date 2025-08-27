@@ -1,0 +1,312 @@
+// file: com/example/telematicsdatasetgathering/DataCollectionService.kt
+
+package com.example.telematicsdatasetgathering
+
+import android.annotation.SuppressLint
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.Intent
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.os.Build
+import android.os.IBinder
+import android.os.Looper
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import com.google.android.gms.location.*
+import kotlinx.serialization.InternalSerializationApi
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.util.UUID
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+
+@SuppressLint("UnsafeOptInUsageError")
+@Serializable
+data class TelematicsData(
+    val eventType: String,
+    val timestamp: Long = System.currentTimeMillis(),
+    val tripId: String,
+    val accX: Float? = null,
+    val accY: Float? = null,
+    val accZ: Float? = null,
+    val gyroX: Float? = null,
+    val gyroY: Float? = null,
+    val gyroZ: Float? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val speed: Float? = null,
+    val label: Int,
+    val altitude: Double? = null
+)
+
+
+class DataCollectionService : Service(), SensorEventListener {
+
+    companion object {
+        const val TAG = "DataCollectionService"
+        private const val PUBLISH_INTERVAL_MS = 100L
+        private const val NOTIFICATION_ID = 1
+        private const val NOTIFICATION_CHANNEL_ID = "DataCollectionChannel"
+        private const val ACCEL_THRESHOLD = 0.5f  // m/s^2
+        private const val GYRO_THRESHOLD = 0.1f   // rad/s
+        const val ACTION_START = "ACTION_START"
+        const val ACTION_STOP = "ACTION_STOP"
+        const val ACTION_CHANGE_LABEL = "ACTION_CHANGE_LABEL"
+        const val EXTRA_LABEL = "EXTRA_LABEL"
+    }
+
+    private lateinit var sensorManager: SensorManager
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private lateinit var locationCallback: LocationCallback
+    private lateinit var mqttClient: MqttClient
+    private val tripId = UUID.randomUUID().toString()
+    private var lastAccelPublishTime: Long = 0L
+    private var lastGyroPublishTime: Long = 0L
+    private val lastAccelData = FloatArray(3)
+    private val lastGyroData = FloatArray(3)
+    private var currentLabel: Int = 0
+    private val serviceScope = CoroutineScope(Dispatchers.IO)
+    private val currentStats = RealTimeStats().copy()
+
+    override fun onCreate() {
+        super.onCreate()
+        mqttClient = MqttClient(applicationContext)
+        setupSensors()
+        setupLocation()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Handle the different commands sent from the MainActivity
+        when (intent?.action) {
+            ACTION_START -> {
+                Log.d(TAG, "Starting data collection service.")
+                startForeground(NOTIFICATION_ID, createNotification())
+                connectAndStartListeners()
+            }
+            ACTION_CHANGE_LABEL -> {
+                val newLabel = intent.getIntExtra(EXTRA_LABEL, 0)
+                Log.d(TAG, "Changing label to: $newLabel")
+                this.currentLabel = newLabel
+            }
+            ACTION_STOP -> {
+                Log.d(TAG, "Stopping data collection service.")
+                stopSelf() // This will trigger onDestroy()
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun connectAndStartListeners() {
+        mqttClient.connect(
+            onSuccess = {
+                Log.d(TAG, "MQTT connected, starting listeners.")
+                startSensorListeners()
+                startLocationUpdates()
+            },
+            onFailure = {
+                Log.e(TAG, "MQTT connection failed. Stopping service.", it)
+                stopSelf()
+            }
+        )
+    }
+
+    private fun createNotification(): Notification {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                "Data Collection",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+
+        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setContentTitle("Telematics Data")
+            .setContentText("Collecting sensor and location data...")
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .build()
+    }
+
+    private fun setupSensors() {
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+    }
+
+    private fun startSensorListeners() {
+        sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.also {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+        }
+        sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.also {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun setupLocation() {
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        locationCallback = object : LocationCallback() {
+
+            override fun onLocationResult(locationResult: LocationResult) {
+                serviceScope.launch {
+                    Log.d("STATS_DEBUG", "GPS: Emitting stats update from service.") // <-- ADD THIS
+                    DataRepository.updateStats(currentStats)
+                }
+                locationResult.lastLocation?.let { location ->
+                    // Update the stats object with GPS data
+                    currentStats.speed = location.speed
+                    currentStats.latitude = location.latitude
+                    currentStats.longitude = location.longitude
+
+                    // Send stats to the UI. We can do this on every GPS update
+                    // as it's less frequent.
+                    serviceScope.launch {
+                        DataRepository.updateStats(currentStats)
+                    }
+
+                    // --- THIS BLOCK WAS MISSING ---
+                    val data = TelematicsData(
+                        eventType = "gps",
+                        timestamp = System.currentTimeMillis(),
+                        tripId = tripId,
+                        label = this@DataCollectionService.currentLabel,
+                        latitude = location.latitude,
+                        longitude = location.longitude,
+                        speed = location.speed,
+                        altitude = location.altitude
+                    )
+                    // -----------------------------
+                    publishData(data)
+                }
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startLocationUpdates() {
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
+            .setWaitForAccurateLocation(false)
+            .setMinUpdateIntervalMillis(500)
+            .build()
+        fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+    }
+
+    override fun onSensorChanged(event: SensorEvent?) {
+        event ?: return // If event is null, do nothing
+
+        val currentTime = System.currentTimeMillis()
+        var shouldPublish = false
+
+        when (event.sensor.type) {
+            Sensor.TYPE_ACCELEROMETER -> {
+                // Calculate magnitude
+                val accMag = kotlin.math.sqrt(event.values[0] * event.values[0] + event.values[1] * event.values[1] + event.values[2] * event.values[2])
+                currentStats.accMag = accMag // Update the stats object
+                if (shouldPublish) {
+                    serviceScope.launch {
+                        Log.d("STATS_DEBUG", "SENSOR: Emitting stats update from service.") // <-- ADD THIS
+                        DataRepository.updateStats(currentStats)
+                    }
+                }
+                if (hasAccelChanged(event.values)) {
+                    if (currentTime - lastAccelPublishTime > PUBLISH_INTERVAL_MS) {
+                        lastAccelPublishTime = currentTime
+                        System.arraycopy(event.values, 0, lastAccelData, 0, 3)
+
+                        val data = TelematicsData(
+                            eventType = "accelerometer",
+                            timestamp = currentTime,
+                            tripId = tripId,
+                            label = this.currentLabel,
+                            accX = event.values[0],
+                            accY = event.values[1],
+                            accZ = event.values[2]
+                        )
+                        publishData(data)
+                        shouldPublish = true
+                    }
+                }
+            }
+
+            Sensor.TYPE_GYROSCOPE -> {
+                // Calculate magnitude
+                val gyroMag = kotlin.math.sqrt(event.values[0] * event.values[0] + event.values[1] * event.values[1] + event.values[2] * event.values[2])
+                currentStats.gyroMag = gyroMag // Update the stats object
+
+                if (hasGyroChanged(event.values)) {
+                    if (currentTime - lastGyroPublishTime > PUBLISH_INTERVAL_MS) {
+                        lastGyroPublishTime = currentTime
+                        System.arraycopy(event.values, 0, lastGyroData, 0, 3)
+
+                        // --- THIS BLOCK WAS MISSING ---
+                        val data = TelematicsData(
+                            eventType = "gyroscope",
+                            timestamp = currentTime,
+                            tripId = tripId,
+                            label = this.currentLabel,
+                            gyroX = event.values[0],
+                            gyroY = event.values[1],
+                            gyroZ = event.values[2]
+                        )
+                        // -----------------------------
+                        publishData(data)
+                        shouldPublish = true
+                    }
+                }
+            }
+        }
+
+        // If any data was published, send the latest stats to the UI
+        if (shouldPublish) {
+            serviceScope.launch {
+                DataRepository.updateStats(currentStats)
+            }
+        }
+    }
+
+    private fun hasAccelChanged(newValues: FloatArray): Boolean {
+        // Calculate the difference for each axis
+        val deltaX = Math.abs(lastAccelData[0] - newValues[0])
+        val deltaY = Math.abs(lastAccelData[1] - newValues[1])
+        val deltaZ = Math.abs(lastAccelData[2] - newValues[2])
+        // Return true if any axis has changed by more than the threshold
+        return deltaX > ACCEL_THRESHOLD || deltaY > ACCEL_THRESHOLD || deltaZ > ACCEL_THRESHOLD
+    }
+
+    private fun hasGyroChanged(newValues: FloatArray): Boolean {
+        // Calculate the difference for each axis
+        val deltaX = Math.abs(lastGyroData[0] - newValues[0])
+        val deltaY = Math.abs(lastGyroData[1] - newValues[1])
+        val deltaZ = Math.abs(lastGyroData[2] - newValues[2])
+        // Return true if any axis has changed by more than the threshold
+        return deltaX > GYRO_THRESHOLD || deltaY > GYRO_THRESHOLD || deltaZ > GYRO_THRESHOLD
+    }
+
+    // --- THIS IS THE CORRECTED ANNOTATION PLACEMENT ---
+    @OptIn(InternalSerializationApi::class)
+    // ----------------------------------------------------
+    private fun publishData(data: TelematicsData) {
+        // The service now knows the current label and includes it automatically
+        val jsonPayload = Json.encodeToString(data)
+        mqttClient.publish(jsonPayload)
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+        // Can be implemented if needed
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.d(TAG, "Stopping data collection service.")
+        sensorManager.unregisterListener(this)
+        fusedLocationClient.removeLocationUpdates(locationCallback)
+        mqttClient.disconnect()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+}
