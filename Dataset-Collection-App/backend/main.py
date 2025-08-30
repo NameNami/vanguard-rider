@@ -1,102 +1,172 @@
-import paho.mqtt.client as mqtt
+import asyncio
 import json
 import csv
 import os
+import aiomqtt
+from aiohttp import web
+import sys
+import time
 
-# --- CONFIGURE YOUR HIVEMQ CREDENTIALS HERE ---
-# These MUST be the same as in your Android app's MqttClient.kt
-
+# --- CONFIGURATION ---
 MQTT_BROKER_URL = "ba70606db22d4a5db773598694423e08.s1.eu.hivemq.cloud"
-MQTT_PORT = 8883  # Standard port for MQTT over TLS
+MQTT_PORT = 8883
 MQTT_TOPIC = "telematics/data"
 
-# Use the credentials from the "Access Management" section of HiveMQ Cloud
+# --- IMPORTANT: REPLACE WITH YOUR PERMANENT CREDENTIALS ---
+# Use the credentials from the "Access Management" section of your HiveMQ dashboard.
 MQTT_USERNAME = "hivemq.webclient.1756177628468"  # Replace with your actual username
-MQTT_PASSWORD = "FwPxQGU6&,d>rL.95s1n"  # Replace with your actual password
+MQTT_PASSWORD = "FwPxQGU6&,d>rL.95s1n"
 
-# The name of the CSV file where data will be saved
+WEB_SERVER_PORT = 8080
 CSV_FILENAME = "telematics_dataset.csv"
+DEVICE_TIMEOUT_SECONDS = 5.0  # Seconds of no data before device is "Disconnected"
 
-# The header row for our CSV file
 CSV_HEADER = [
-    "eventType", "timestamp", "tripId", "accX", "accY", "accZ",
-    "gyroX", "gyroY", "gyroZ", "latitude", "longitude", "speed", "altitude"
+    "timestamp", "tripId", "label", "accX", "accY", "accZ", "accMag",
+    "gyroX", "gyroY", "gyroZ", "gyroMag", "rotVecX", "rotVecY", "rotVecZ", "rotVecW",
+    "latitude", "longitude", "speed", "altitude"
 ]
 
-# --- SCRIPT LOGIC ---
+# --- SHARED STATE ---
+# This holds the timestamp of the last message received from the phone
+last_message_time = {"time": time.time()}
 
-# This function is called when the script successfully connects to the broker
-def on_connect(client, userdata, flags, rc, properties=None):
-    if rc == 0:
-        print(f"Successfully connected to HiveMQ Broker!")
-        # Subscribe to the topic once connected
-        client.subscribe(MQTT_TOPIC)
-        print(f"Subscribed to topic: {MQTT_TOPIC}")
-    else:
-        print(f"Failed to connect, return code {rc}\n")
-        print("Please check your broker URL, port, username, and password.")
 
-# This function is called every time a new message is received on the subscribed topic
-def on_message(client, userdata, msg):
+# --- SSE HANDLER (Sends data to the browser) ---
+async def sse_handler(request):
+    headers = {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*'
+    }
+    resp = web.StreamResponse(headers=headers)
+    await resp.prepare(request)
+    print("✅ BROWSER CONNECTED to SSE endpoint.")
+
+    # Each browser gets its own queue to receive messages
+    client_queue = asyncio.Queue()
+    request.app['clients'].add(client_queue)
+
     try:
-        # Decode the message payload from bytes to a string, then parse as JSON
-        payload = json.loads(msg.payload.decode())
-        print(f"Received data: {payload}")
+        while True:
+            # Wait for either a data message or a status message from the other tasks
+            event_type, data = await client_queue.get()
 
-        # Write the received data to the CSV file
-        with open(CSV_FILENAME, mode='a', newline='') as file:
-            writer = csv.DictWriter(file, fieldnames=CSV_HEADER)
-            # Use .get() to provide a default empty value if a key is missing
-            writer.writerow({
-                "eventType": payload.get("eventType"),
-                "timestamp": payload.get("timestamp"),
-                "tripId": payload.get("tripId"),
-                "accX": payload.get("accX"),
-                "accY": payload.get("accY"),
-                "accZ": payload.get("accZ"),
-                "gyroX": payload.get("gyroX"),
-                "gyroY": payload.get("gyroY"),
-                "gyroZ": payload.get("gyroZ"),
-                "latitude": payload.get("latitude"),
-                "longitude": payload.get("longitude"),
-                "speed": payload.get("speed"),
-                "altitude": payload.get("altitude")
-            })
+            # Format the data in the required SSE format with a custom event name
+            sse_message = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+            await resp.write(sse_message.encode('utf-8'))
 
-    except json.JSONDecodeError:
-        print(f"Error decoding JSON: {msg.payload.decode()}")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+            client_queue.task_done()
+    except asyncio.CancelledError:
+        print("❗️ Browser disconnected.")
+    finally:
+        # Clean up by removing the client's queue
+        request.app['clients'].remove(client_queue)
+
+    return resp
+
+
+# --- MQTT MESSAGE HANDLING (Receives data from the phone) ---
+async def handle_mqtt_messages(client, app_state):
+    print("MQTT Message handler started.")
+    async for message in client.messages:
+        try:
+            payload = json.loads(message.payload.decode())
+            print(f"Received from MQTT: Label {payload.get('label', '')}")
+
+            # Update the last message time to now
+            last_message_time["time"] = time.time()
+
+            # Write data to the CSV file
+            with open(CSV_FILENAME, mode='a', newline='') as file:
+                writer = csv.DictWriter(file, fieldnames=CSV_HEADER)
+                row_to_write = {key: payload.get(key) for key in CSV_HEADER}
+                writer.writerow(row_to_write)
+
+            # Put the data into the queue for ALL connected browser clients
+            for q in app_state['clients']:
+                await q.put(('telematics-update', payload))
+
+        except Exception as e:
+            print(f"Error processing message: {e}")
+
+
+# --- DEVICE CONNECTION MONITOR (Checks for phone connection timeout) ---
+async def monitor_device_connection(app_state):
+    current_status = "Unknown"
+    while True:
+        await asyncio.sleep(2)  # Check every 2 seconds
+
+        time_since_last_message = time.time() - last_message_time["time"]
+
+        new_status = "Device Connected" if time_since_last_message <= DEVICE_TIMEOUT_SECONDS else "Device Disconnected"
+
+        if new_status != current_status:
+            current_status = new_status
+            print(f"DEVICE STATUS CHANGE: {current_status}")
+            # Send the new status to ALL connected browser clients
+            for q in app_state['clients']:
+                await q.put(('status-update', {"deviceStatus": current_status}))
+
+
+# --- MQTT CLIENT (Manages connection to HiveMQ) ---
+async def main_mqtt_client(app_state):
+    while True:
+        try:
+            async with aiomqtt.Client(
+                    hostname=MQTT_BROKER_URL, port=MQTT_PORT,
+                    username=MQTT_USERNAME, password=MQTT_PASSWORD,
+                    tls_params=aiomqtt.TLSParameters()
+            ) as client:
+                print(f"✅ Connected to HiveMQ Broker!")
+                await client.subscribe(MQTT_TOPIC)
+                print(f"✅ Subscribed to topic: {MQTT_TOPIC}")
+                await handle_mqtt_messages(client, app_state)
+        except aiomqtt.MqttError as e:
+            print(f"❌ MQTT connection error: {e}. Reconnecting in 5 seconds...")
+            await asyncio.sleep(5)
+
 
 def setup_csv():
-    # Check if the CSV file already exists to avoid writing the header multiple times
-    file_exists = os.path.isfile(CSV_FILENAME)
-    if not file_exists:
+    if not os.path.isfile(CSV_FILENAME):
         with open(CSV_FILENAME, mode='w', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(CSV_HEADER)
         print(f"Created new CSV file: {CSV_FILENAME}")
 
-# Main execution block
-if __name__ == "__main__":
+
+# --- MAIN EXECUTION BLOCK ---
+if __name__ == '__main__':
+    # Fix for asyncio on Windows
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     setup_csv()
 
-    # Create a new MQTT client
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    # Create the web application
+    app = web.Application()
+    app['clients'] = set()  # A set to hold all connected browser clients
+    app.router.add_get('/sse', sse_handler)
 
-    # Set the username and password for authentication
-    client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 
-    # Enable TLS for a secure connection
-    client.tls_set(tls_version=mqtt.ssl.PROTOCOL_TLS)
+    async def run_all():
+        # Start MQTT client and Device Monitor as background tasks
+        mqtt_task = asyncio.create_task(main_mqtt_client(app))
+        monitor_task = asyncio.create_task(monitor_device_connection(app))
 
-    # Assign the callback functions
-    client.on_connect = on_connect
-    client.on_message = on_message
+        # Start the web server
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, 'localhost', WEB_SERVER_PORT)
+        await site.start()
+        print(f"✅ Dashboard server running on http://localhost:{WEB_SERVER_PORT}")
 
-    print("Connecting to MQTT broker...")
-    # Connect to the broker
-    client.connect(MQTT_BROKER_URL, MQTT_PORT)
+        # Run both tasks forever
+        await asyncio.gather(mqtt_task, monitor_task)
 
-    # Start a background loop to process messages. This is non-blocking.
-    client.loop_forever()
+
+    try:
+        asyncio.run(run_all())
+    except KeyboardInterrupt:
+        print("\nShutting down.")
