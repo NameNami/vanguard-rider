@@ -1,0 +1,7 @@
+aiomqtt
+aiohttp
+numpy
+joblib
+pandas
+tensorflow
+scikit-learn
