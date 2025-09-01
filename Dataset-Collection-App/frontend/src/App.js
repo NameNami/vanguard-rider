@@ -18,11 +18,13 @@ L.Icon.Default.mergeOptions({
 });
 
 
-// --- HELPER AND MEMOIZED COMPONENTS (UNCHANGED) ---
+// --- HELPER AND MEMOIZED COMPONENTS ---
 
 const ChangeView = ({ center, zoom }) => {
   const map = useMap();
-  map.setView(center, zoom);
+  useEffect(() => {
+    map.setView(center, zoom);
+  }, [center, zoom, map]);
   return null;
 };
 
@@ -61,7 +63,7 @@ const LiveStats = memo(({ stats }) => {
     const { accX = 0, accY = 0, accZ = 0, accMag = 0,
             gyroX = 0, gyroY = 0, gyroZ = 0,
             rotVecX, rotVecY, rotVecZ, rotVecW,
-            speed = 0, label = 0 } = stats;
+            speed = 0, label = 0 } = stats || {};
             
     const labelMap = { 0: "Normal", 1: "Harsh Brake", 2: "Harsh Cornering", 3: "Pothole", 4: "Accident", 5: "Phone Fall"};
 
@@ -82,24 +84,51 @@ const LiveStats = memo(({ stats }) => {
 
 const ConnectionStatusIndicator = ({ backendStatus, deviceStatus }) => {
     const getStatusStyle = (status) => {
-        let color = '#6c757d'; // Gray for Unknown/Connecting
-        if (status === 'Connected' || status === 'Device Connected') color = '#198754'; // Green
-        if (status === 'Disconnected' || status === 'Device Disconnected') color = '#dc3545'; // Red
+        let color = '#6c757d';
+        if (status === 'Connected' || status === 'Device Connected') color = '#198754';
+        if (status === 'Disconnected' || status === 'Device Disconnected') color = '#dc3545';
         return {
-            fontWeight: 'bold',
-            color: 'white',
-            padding: '5px 10px',
-            borderRadius: '5px',
-            backgroundColor: color,
-            display: 'inline-block',
+            fontWeight: 'bold', color: 'white', padding: '5px 10px',
+            borderRadius: '5px', backgroundColor: color, display: 'inline-block',
             marginLeft: '10px'
         };
     };
-
     return (
         <div style={{fontSize: '1.2em', marginBottom: '15px'}}>
             <span><strong>Backend Status:</strong> <span style={getStatusStyle(backendStatus)}>{backendStatus}</span></span>
             <span style={{marginLeft: '20px'}}><strong>Device Status:</strong> <span style={getStatusStyle(deviceStatus)}>{deviceStatus}</span></span>
+        </div>
+    );
+};
+
+const TripSelector = memo(({ activeTrips, selectedTrip, onTripSelect }) => {
+    return (
+        <div style={{ marginBottom: '15px' }}>
+            <label htmlFor="trip-select" style={{ fontWeight: 'bold', marginRight: '10px', fontSize: '1.2em' }}>Monitor Trip:</label>
+            <select
+                id="trip-select"
+                value={selectedTrip}
+                onChange={(e) => onTripSelect(e.target.value)}
+                style={{ padding: '8px', fontSize: '1em', borderRadius: '5px' }}
+            >
+                <option value="all">All Trips (Overview)</option>
+                {activeTrips.map(tripId => (
+                    <option key={tripId} value={tripId}>{tripId.substring(0, 8)}...</option>
+                ))}
+            </select>
+        </div>
+    );
+});
+
+const DetailPlaceholder = ({ text }) => {
+    return (
+        <div style={{
+            height: '100%', minHeight: '200px', display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+            background: '#f8f9fa', border: '1px solid #ccc', borderRadius: '5px',
+            textAlign: 'center', color: '#6c757d'
+        }}>
+            <p style={{ fontSize: '1.2em', padding: '10px' }}>{text}</p>
         </div>
     );
 };
@@ -113,20 +142,20 @@ const initialLatestData = {
     rotVecX: 0, rotVecY: 0, rotVecZ: 0, rotVecW: 1,
     speed: 0, label: 0, latitude: 3.1390, longitude: 101.6869
 };
-const initialState = {
-    latestData: initialLatestData,
-    position: [3.1390, 101.6869],
-    tripPath: [],
-    chartData: { labels: [], datasets: [] }
-};
 
 function App() {
-    const [dashboardState, setDashboardState] = useState(initialState);
+    const [latestData, setLatestData] = useState(initialLatestData);
+    const [position, setPosition] = useState([3.1390, 101.6869]);
+    const [chartData, setChartData] = useState({ labels: [], datasets: [] });
     const [backendStatus, setBackendStatus] = useState("Connecting...");
     const [deviceStatus, setDeviceStatus] = useState("Unknown");
-    const chartDataRef = useRef({ labels: [], accData: [], speedData: [] });
+    const [activeTrips, setActiveTrips] = useState([]);
+    const [selectedTrip, setSelectedTrip] = useState("all");
+    const [tripPaths, setTripPaths] = useState({});
+    
+    const chartDataRefs = useRef({});
 
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // This useEffect hook handles all real-time communication
     useEffect(() => {
         const eventSource = new EventSource("http://localhost:8080/sse");
         
@@ -135,49 +164,61 @@ function App() {
             setBackendStatus("Connected");
         };
 
-        // --- UPDATED: Use addEventListener for custom events ---
         eventSource.addEventListener('telematics-update', (event) => {
             const data = JSON.parse(event.data);
-            
-            let newPosition = dashboardState.position;
-            let newTripPath = dashboardState.tripPath;
+            const tripId = data.tripId;
+
+            // Always update the background path data for every trip
             if (data.latitude && data.longitude && data.latitude !== 0) {
-                newPosition = [data.latitude, data.longitude];
-                if (newTripPath.length === 0 || newTripPath[newTripPath.length - 1][0] !== newPosition[0]) {
-                   newTripPath = [...newTripPath, newPosition];
+                const newPosition = [data.latitude, data.longitude];
+                setTripPaths(prevPaths => {
+                    const currentPath = prevPaths[tripId] || [];
+                    const newPath = [...currentPath, newPosition];
+                    return { ...prevPaths, [tripId]: newPath };
+                });
+            }
+
+            // Only update the main display if the trip is selected (or in overview mode)
+            if (selectedTrip === 'all' || tripId === selectedTrip) {
+                setLatestData(data);
+                if (data.latitude && data.longitude && data.latitude !== 0) {
+                    setPosition([data.latitude, data.longitude]);
                 }
+
+                // Manage chart data
+                const chartKey = selectedTrip === 'all' ? 'all' : tripId;
+                if (!chartDataRefs.current[chartKey]) {
+                    chartDataRefs.current[chartKey] = { labels: [], accData: [], speedData: [] };
+                }
+                const tripChart = chartDataRefs.current[chartKey];
+                const now = new Date(data.timestamp).toLocaleTimeString();
+                tripChart.labels.push(now);
+                tripChart.accData.push(data.accMag);
+                tripChart.speedData.push(data.speed * 3.6);
+
+                if (tripChart.labels.length > 50) {
+                    tripChart.labels.shift();
+                    tripChart.accData.shift();
+                    tripChart.speedData.shift();
+                }
+
+                setChartData({
+                    labels: [...tripChart.labels],
+                    datasets: [
+                        { label: 'Speed (km/h)', data: [...tripChart.speedData], borderColor: 'rgb(75, 192, 192)', yAxisID: 'y' },
+                        { label: 'Accel. Mag (m/s²)', data: [...tripChart.accData], borderColor: 'rgb(255, 99, 132)', yAxisID: 'y1' }
+                    ]
+                });
             }
-
-            const now = new Date(data.timestamp).toLocaleTimeString();
-            chartDataRef.current.labels.push(now);
-            chartDataRef.current.accData.push(data.accMag);
-            chartDataRef.current.speedData.push(data.speed * 3.6);
-
-            if (chartDataRef.current.labels.length > 50) {
-                chartDataRef.current.labels.shift();
-                chartDataRef.current.accData.shift();
-                chartDataRef.current.speedData.shift();
-            }
-            
-            const newChartData = {
-                labels: [...chartDataRef.current.labels],
-                datasets: [
-                    { label: 'Speed (km/h)', data: [...chartDataRef.current.speedData], borderColor: 'rgb(75, 192, 192)', yAxisID: 'y' },
-                    { label: 'Accel. Mag (m/s²)', data: [...chartDataRef.current.accData], borderColor: 'rgb(255, 99, 132)', yAxisID: 'y1' }
-                ]
-            };
-
-            setDashboardState({
-                latestData: data,
-                position: newPosition,
-                tripPath: newTripPath,
-                chartData: newChartData
-            });
+        });
+        
+        eventSource.addEventListener('trip-list-update', (event) => {
+            const tripData = JSON.parse(event.data);
+            setActiveTrips(tripData.activeTrips);
         });
 
         eventSource.addEventListener('status-update', (event) => {
             const statusData = JSON.parse(event.data);
-            console.log("Received device status:", statusData.deviceStatus);
             setDeviceStatus(statusData.deviceStatus);
         });
 
@@ -185,23 +226,24 @@ function App() {
             console.error("EventSource failed:", err);
             setBackendStatus("Disconnected");
             setDeviceStatus("Unknown");
-            eventSource.close();
         };
         
         return () => {
             console.log("Closing SSE connection.");
             eventSource.close();
         };
-    }, []);
+    }, [selectedTrip]); // Dependency array makes the filtering logic re-evaluate when you change the dropdown
 
-    const { latestData, position, tripPath, chartData } = dashboardState;
     const { rotVecX, rotVecY, rotVecZ, rotVecW } = latestData;
+    const isTripSelected = selectedTrip !== 'all';
+    const displayedPath = isTripSelected ? (tripPaths[selectedTrip] || []) : [];
 
     return (
         <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
             <h1>Vanguard Rider - Live Telematics Dashboard</h1>
             
             <ConnectionStatusIndicator backendStatus={backendStatus} deviceStatus={deviceStatus} />
+            <TripSelector activeTrips={activeTrips} selectedTrip={selectedTrip} onTripSelect={setSelectedTrip} />
             
             <div style={{ 
                 display: 'grid', 
@@ -212,24 +254,41 @@ function App() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                     <div>
                         <h2>Live Map</h2>
-                        <MemoizedMap position={position} tripPath={tripPath} />
+                        <MemoizedMap position={position} tripPath={displayedPath} />
                     </div>
                     <div>
                         <h2>Live Phone Orientation</h2>
-                        <Memoized3DView rotationData={rotVecX !== undefined ? [rotVecX, rotVecY, rotVecZ, rotVecW] : null} />
+                        {isTripSelected ? (
+                            <Memoized3DView rotationData={rotVecX !== undefined ? [rotVecX, rotVecY, rotVecZ, rotVecW] : null} />
+                        ) : (
+                            <DetailPlaceholder text="Select a trip to see its live orientation." />
+                        )}
                     </div>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                     <div>
                         <h2>Sensor Readings Over Time</h2>
-                        <MemoizedChart chartData={chartData} />
+                        {isTripSelected || activeTrips.length > 0 ? (
+                            <MemoizedChart chartData={chartData} />
+                        ) : (
+                             <DetailPlaceholder text="Waiting for trip data..." />
+                        )}
                     </div>
                     <div>
                         <h2>Live Stats</h2>
-                        <LiveStats stats={latestData} />
+                        {isTripSelected ? (
+                            <LiveStats stats={latestData} />
+                        ) : (
+                            <div style={{fontSize: '1.1em', padding: '10px', border: '1px solid #eee', borderRadius: '5px' }}>
+                                <p><strong>Active Trips:</strong> {activeTrips.length}</p>
+                                <p>Currently showing overview. The map marker will show the latest GPS location from any trip.</p>
+                                <p>Please select a trip from the dropdown to see its specific details.</p>
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>
+            {/* No EventMarker component is needed in this monitor-only version */}
         </div>
     );
 }

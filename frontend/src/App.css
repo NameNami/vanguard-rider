@@ -1,0 +1,187 @@
+/* file: frontend/src/App.css */
+
+/* --- General Layout & Theme --- */
+body {
+    background-color: #1a1a2e;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    margin: 0;
+    overflow: hidden; /* Prevent the whole page from scrolling */
+}
+
+.App {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.App-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 30px;
+    background-color: #161625;
+    border-bottom: 1px solid #3d3d5e;
+    flex-shrink: 0;
+}
+
+.App-header h1 {
+    font-size: 1.5rem;
+    margin: 0;
+}
+
+.main-content {
+    display: flex;
+    flex-grow: 1;
+    padding: 20px;
+    gap: 20px;
+    overflow: hidden; /* This is correct, it prevents the main layout from scrolling */
+}
+
+/* --- THIS IS THE FIX --- */
+.left-panel, .right-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    overflow-y: auto; /* Allow VERTICAL scrolling ONLY if content is too tall */
+    padding-right: 10px; /* Add space for the scrollbar to prevent content overlap */
+}
+
+.left-panel { width: 30%; }
+.right-panel { width: 70%; }
+
+.widget-box {
+    background-color: #1f1f30;
+    border-radius: 8px;
+    padding: 15px 20px;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #3d3d5e;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    flex-shrink: 0; /* Prevent widgets from shrinking to fit */
+}
+
+.widget-box h3 {
+    margin-top: 0;
+    margin-bottom: 15px;
+    color: #a7a9be;
+    font-size: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 1px solid #3d3d5e;
+    padding-bottom: 10px;
+}
+
+/* --- Specific Panel Styling --- */
+.map-box, .chart-box {
+    flex: 1;
+    min-height: 250px; /* Ensure map/chart don't collapse too much */
+}
+
+.chart-container {
+    position: relative;
+    flex: 1;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    font-size: 1em;
+}
+
+.stat-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background-color: #2a2a3c;
+    border-radius: 4px;
+}
+.stat-item strong { color: #a7a9be; }
+.stat-item span { font-weight: 500; color: #fff; }
+
+/* --- Speed Alert Panel --- */
+.speed-alert-panel {
+    background-color: #e74c3c;
+    color: white;
+    text-align: center;
+    border: 1px solid #c0392b;
+    animation: pulse-alert 1.5s infinite ease-in-out;
+}
+.speed-alert-panel h3 { color: white; border-bottom: none; margin-bottom: 5px; letter-spacing: 2px; }
+.speed-alert-panel p { font-size: 1.2rem; font-weight: bold; margin: 0; }
+
+/* --- Live AI Status Panel --- */
+.live-status-panel {
+    text-align: center;
+    border-left: 5px solid #6c5ce7;
+}
+.status-text {
+    font-size: 2.5rem;
+    font-weight: bold;
+    margin: 10px 0 0 0;
+    padding: 10px;
+    border-radius: 5px;
+    transition: all 0.3s ease-in-out;
+}
+.status-normal { color: #2ecc71; }
+.status-warning { color: #f1c40f; }
+.status-critical { color: #e74c3c; animation: pulse-critical-text 1.5s infinite; }
+.status-buffering { color: #95a5a6; }
+
+/* --- Event Log Panel --- */
+.event-log-panel ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+.event-log-panel li {
+    background-color: #2a2a3c;
+    padding: 10px 15px;
+    border-radius: 4px;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 1.1em;
+    font-weight: 500;
+}
+.event-log-panel li:last-child { margin-bottom: 0; }
+.event-log-panel .event-name { color: #f1c40f; }
+.event-log-panel .event-time { color: #a7a9be; font-size: 0.9em; font-weight: 400; }
+.event-log-panel .no-events-placeholder { color: #a7a9be; text-align: center; padding: 20px 0; }
+
+
+/* --- Connection Status Indicator --- */
+.connection-status {
+    display: flex;
+    align-items: center;
+    padding: 5px 15px;
+    border-radius: 15px;
+    font-size: 0.9em;
+    font-weight: 500;
+}
+.connection-status span {
+    height: 10px; width: 10px; border-radius: 50%; margin-right: 8px;
+}
+.connection-status.connected { background-color: #27ae60; color: white; }
+.connection-status.connected span { background-color: white; animation: pulse-connection 2s infinite; }
+.connection-status.disconnected { background-color: #c0392b; color: white; }
+.connection-status.disconnected span { background-color: white; }
+
+/* --- Keyframe Animations --- */
+@keyframes pulse-alert {
+    0% { transform: scale(1); box-shadow: 0 0 5px #e74c3c; }
+    50% { transform: scale(1.02); box-shadow: 0 0 20px #e74c3c; }
+    100% { transform: scale(1); box-shadow: 0 0 5px #e74c3c; }
+}
+@keyframes pulse-critical-text {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+}
+@keyframes pulse-connection {
+    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7); }
+    70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(255, 255, 255, 0); }
+    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+}
