@@ -14,6 +14,17 @@ import './App.css';
 // Register all necessary Chart.js components
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
+// --- NEW: ADDED PREDICTION LABEL MAPPING ---
+// Maps the numerical prediction from the backend to a human-readable string.
+const predictionLabels = {
+    0: 'Normal',
+    1: 'Harsh Braking',
+    2: 'Harsh Cornering',
+    3: 'Bump/Pothole',
+    4: 'Accident',
+    5: 'Phone Fall'
+};
+
 // --- HELPER & MEMOIZED UI COMPONENTS ---
 
 // 1. Helper to auto-center the map view
@@ -116,7 +127,9 @@ function App() {
 
         eventSource.addEventListener('telematics-update', (event) => {
             const data = JSON.parse(event.data);
-            const newPrediction = data.prediction || 'N/A';
+            
+            // --- MODIFIED: Translate the numerical prediction to its label ---
+            const newPrediction = predictionLabels[data.prediction] || 'N/A';
             
             // --- LOGIC FOR THE EVENT LOG ---
             // A new event is logged only if the prediction changes to something significant.
