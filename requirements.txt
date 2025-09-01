@@ -1,0 +1,9 @@
+tensorflow
+pandas
+numpy
+joblib
+scikit-learn
+aiohttp
+aiomqtt
+paho-mqtt
+gpxpy
