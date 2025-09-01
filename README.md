@@ -1,6 +1,4 @@
-# vanguard-rider
-
-# DriveSense: AI-Powered Telematics for Safer Motorcycle Deliveries
+# AI-Powered Telematics for Safer Motorcycle Deliveries
 *Helping GrabFood riders drive safer through real-time event detection*
 
 ---
