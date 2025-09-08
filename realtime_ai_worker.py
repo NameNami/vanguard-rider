@@ -24,8 +24,8 @@ class Config:
     MQTT_BROKER_URL = "ba70606db22d4a5db773598694423e08.s1.eu.hivemq.cloud"
     MQTT_PORT = 8883
     MQTT_TOPIC = "telematics/data"
-    MQTT_USERNAME = "hivemq.webclient.1756177628468" # <-- IMPORTANT
-    MQTT_PASSWORD = "FwPxQGU6&,d>rL.95s1n" # <-- IMPORTANT
+    MQTT_USERNAME = "" # <-- IMPORTANT
+    MQTT_PASSWORD = "" # <-- IMPORTANT
     WEB_SERVER_PORT = 8080
     
     # --- Data Logging and Trip Management ---
